@@ -5,7 +5,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from labbook.enhanced_rag_pipeline import build_selection_view, get_node_by_id
+from labbook.enhanced_rag_pipeline import (
+    build_selection_view,
+    get_node_by_id,
+    parse_selection_json,
+)
 
 
 class TestSelectionView(unittest.TestCase):
@@ -49,3 +53,13 @@ class TestNodeLookup(unittest.TestCase):
 
         self.assertIsNotNone(node)
         self.assertEqual(node.get("title"), "Child")
+
+
+class TestSelectionParsing(unittest.TestCase):
+    def test_parse_selection_json_filters_and_fills(self):
+        available = ["a", "b", "c", "d", "e"]
+        text = '{"selected_node_ids":["b","x"],"reasoning":"ok"}'
+
+        result = parse_selection_json(text, available, expected_count=5)
+
+        self.assertEqual(result["selected_node_ids"], ["b", "a", "c", "d", "e"])
