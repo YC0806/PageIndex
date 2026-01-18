@@ -83,3 +83,17 @@ def parse_selection_json(
         "selected_node_ids": filtered[:expected_count],
         "reasoning": data.get("reasoning", ""),
     }
+
+
+def format_selection_prompt(
+    question: str,
+    file_name: str,
+    selection_view: List[Dict[str, str]],
+    expected_count: int,
+) -> str:
+    payload = json.dumps(selection_view, ensure_ascii=False, indent=2)
+    return (
+        f"Select exactly {expected_count} node_ids for the question from the list. "
+        "Return JSON: {\"selected_node_ids\":[...],\"reasoning\":\"...\"}.\n\n"
+        f"File: {file_name}\nQuestion: {question}\nNodes:\n{payload}"
+    )

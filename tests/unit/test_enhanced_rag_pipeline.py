@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 from labbook.enhanced_rag_pipeline import (
     build_selection_view,
     get_node_by_id,
+    format_selection_prompt,
     parse_selection_json,
 )
 
@@ -63,3 +64,16 @@ class TestSelectionParsing(unittest.TestCase):
         result = parse_selection_json(text, available, expected_count=5)
 
         self.assertEqual(result["selected_node_ids"], ["b", "a", "c", "d", "e"])
+
+
+class TestPromptFormatting(unittest.TestCase):
+    def test_format_selection_prompt_includes_ids(self):
+        prompt = format_selection_prompt(
+            question="What is X?",
+            file_name="doc.json",
+            selection_view=[{"node_id": "n1", "title": "T", "summary": "S"}],
+            expected_count=5,
+        )
+
+        self.assertIn("n1", prompt)
+        self.assertIn("doc.json", prompt)
