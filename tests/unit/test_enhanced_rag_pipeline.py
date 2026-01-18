@@ -5,7 +5,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from labbook.enhanced_rag_pipeline import build_selection_view
+from labbook.enhanced_rag_pipeline import build_selection_view, get_node_by_id
 
 
 class TestSelectionView(unittest.TestCase):
@@ -31,3 +31,21 @@ class TestSelectionView(unittest.TestCase):
                 {"node_id": "n1.1", "title": "Child", "summary": "Child summary"},
             ],
         )
+
+
+class TestNodeLookup(unittest.TestCase):
+    def test_get_node_by_id_returns_node(self):
+        structure = [{
+            "node_id": "n1",
+            "title": "Root",
+            "nodes": [{
+                "node_id": "n1.1",
+                "title": "Child",
+                "nodes": [],
+            }],
+        }]
+
+        node = get_node_by_id(structure, "n1.1")
+
+        self.assertIsNotNone(node)
+        self.assertEqual(node.get("title"), "Child")

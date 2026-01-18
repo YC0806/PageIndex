@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def build_selection_view(structure: Any) -> List[Dict[str, str]]:
@@ -22,3 +22,23 @@ def build_selection_view(structure: Any) -> List[Dict[str, str]]:
         visit(structure)
 
     return items
+
+
+def get_node_by_id(structure: Any, node_id: str) -> Optional[Dict[str, Any]]:
+    def visit(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if node.get("node_id") == node_id:
+            return node
+        for child in node.get("nodes", []) or []:
+            found = visit(child)
+            if found:
+                return found
+        return None
+
+    if isinstance(structure, list):
+        for node in structure:
+            found = visit(node)
+            if found:
+                return found
+    elif isinstance(structure, dict):
+        return visit(structure)
+    return None
