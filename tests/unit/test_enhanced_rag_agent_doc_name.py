@@ -30,6 +30,7 @@ if "pydantic_ai" not in sys.modules:
     sys.modules["pydantic_ai.providers"] = providers
     sys.modules["pydantic_ai.providers.openai"] = openai_providers
 
+_stubbed_distributed_retrieval = False
 if "distributed_retrieval" not in sys.modules:
     distributed_retrieval = types.ModuleType("distributed_retrieval")
     distributed_retrieval.MultiDocRetriever = object
@@ -40,8 +41,12 @@ if "distributed_retrieval" not in sys.modules:
         error=lambda *args, **kwargs: None,
     )
     sys.modules["distributed_retrieval"] = distributed_retrieval
+    _stubbed_distributed_retrieval = True
 
 from labbook.enhanced_rag_agent import get_pageindex_doc_name
+
+if _stubbed_distributed_retrieval:
+    sys.modules.pop("distributed_retrieval", None)
 
 
 def test_get_pageindex_doc_name_prefers_doc_name(tmp_path):

@@ -607,7 +607,7 @@ def run_fixed_pipeline(question: str, context: EnhancedRAGContext) -> Dict[str, 
     selected_nodes: List[Dict[str, Any]] = []
     for result in file_results[:context.top_k_files]:
         file_path = result["file_path"]
-        file_name = result["file_name"]
+        file_name = result.get("file_name") or get_pageindex_doc_name(file_path)
         structure = load_pageindex_structure(file_path)
         if not structure:
             context.search_history.append({
