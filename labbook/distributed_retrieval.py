@@ -157,6 +157,14 @@ def extract_preview(text: str, max_chars: int = 200) -> str:
     return text[:max_chars] + ("..." if len(text) > max_chars else "")
 
 
+def get_display_file_name(file_path: str, metadata: Dict[str, Any]) -> str:
+    """Prefer indexed doc_name for display, falling back to the file stem."""
+    name = (metadata or {}).get("file_name")
+    if name:
+        return name
+    return Path(file_path).stem
+
+
 # ==================== Tree Traversal ====================
 
 def traverse_tree(
@@ -564,7 +572,8 @@ class MultiDocRetriever:
         file_votes = defaultdict(lambda: {
             'summary_votes': 0.0,
             'text_votes': 0.0,
-            'nodes': {}
+            'nodes': {},
+            'file_name': None,
         })
 
         for doc_id, distance, metadata, content in zip(
@@ -576,6 +585,11 @@ class MultiDocRetriever:
             file_path = metadata['file_path']
             content_type = metadata['content_type']
             node_id = metadata['node_id']
+            if not file_votes[file_path]['file_name']:
+                file_votes[file_path]['file_name'] = get_display_file_name(
+                    file_path,
+                    metadata,
+                )
 
             # Convert distance to similarity score
             similarity = 1 / (1 + distance)
@@ -621,7 +635,7 @@ class MultiDocRetriever:
 
             file_results.append({
                 'file_path': file_path,
-                'file_name': Path(file_path).name,
+                'file_name': votes.get('file_name') or get_display_file_name(file_path, {}),
                 'relevance_score': total_score,
                 'vote_breakdown': {
                     'summary_votes': votes['summary_votes'],
@@ -705,7 +719,7 @@ class MultiDocRetriever:
             node_results.append({
                 'node_id': node_id,
                 'file_path': file_path,
-                'file_name': Path(file_path).name,
+                'file_name': get_display_file_name(file_path, metadata),
                 'node_path': metadata.get('node_path', ''),
                 'node_title': metadata.get('node_title', ''),
                 'relevance_score': score,
