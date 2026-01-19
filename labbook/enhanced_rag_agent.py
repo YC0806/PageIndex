@@ -91,6 +91,19 @@ def load_pageindex_structure(file_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def get_pageindex_doc_name(file_path: str) -> str:
+    """Resolve display name from PageIndex JSON, falling back to the file stem."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        doc_name = data.get('doc_name')
+        if doc_name:
+            return doc_name
+    except Exception:
+        pass
+    return Path(file_path).stem
+
+
 def tree_to_text(structure: Any, max_depth: int = 3, current_depth: int = 0) -> str:
     """Convert PageIndex tree to readable text representation."""
     if current_depth >= max_depth:
@@ -263,6 +276,7 @@ def load_file_structure(ctx: RunContext[EnhancedRAGContext], file_path: str) -> 
 
         # Convert to text
         tree_text = tree_to_text(structure, max_depth=ctx.deps.max_tree_depth)
+        file_name = get_pageindex_doc_name(file_path)
 
         # Store in history
         ctx.deps.search_history.append({
@@ -273,9 +287,13 @@ def load_file_structure(ctx: RunContext[EnhancedRAGContext], file_path: str) -> 
 
         return json.dumps({
             'file_path': file_path,
+            'file_name': file_name,
             'structure_loaded': True,
             'tree_structure': tree_text,
-            'instruction': 'Review the structure and use navigate_to_section to get detailed content from specific sections'
+            'instruction': (
+                'Review the structure and use navigate_to_section to get detailed content from '
+                'specific sections. Cite sources using file_name.'
+            ),
         }, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -327,6 +345,7 @@ def navigate_to_section(
         # Extract content
         content_info = {
             'file_path': file_path,
+            'file_name': get_pageindex_doc_name(file_path),
             'section_path': section_path,
             'title': node.get('title', 'Untitled'),
             'node_id': node.get('node_id', ''),
