@@ -95,5 +95,5 @@ def format_selection_prompt(
     return (
         f"Select exactly {expected_count} node_ids for the question from the list. "
         "Return JSON: {\"selected_node_ids\":[...],\"reasoning\":\"...\"}.\n\n"
-        f"File: {file_name}\nQuestion: {question}\nNodes:\n{payload}"
+        f"File: {file_name}\nNodes:\n{payload}\nQuestion: {question}"
     )

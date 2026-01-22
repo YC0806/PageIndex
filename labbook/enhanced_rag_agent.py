@@ -149,6 +149,63 @@ def tree_to_text(structure: Any, max_depth: int = 3, current_depth: int = 0) -> 
     return "\n".join(lines)
 
 
+def build_tree_structure_view(structure: Any, include_summary: bool = True) -> str:
+    """
+    Build a complete tree structure view without text content.
+
+    This view includes node_ids, titles, summaries, and hierarchy
+    for the agent to understand document structure.
+
+    Args:
+        structure: PageIndex tree structure
+        include_summary: Whether to include node summaries
+
+    Returns:
+        Formatted tree structure text
+    """
+    lines = []
+
+    def traverse(node, depth=0, prefix=""):
+        indent = "  " * depth
+        title = node.get('title', 'Untitled')
+        node_id = node.get('node_id', '')
+
+        # Build node line
+        node_line = f"{indent}{prefix}{title}"
+        if node_id:
+            node_line += f" [ID: {node_id}]"
+
+        # Add page range
+        start = node.get('start_index')
+        end = node.get('end_index')
+        if start and end:
+            node_line += f" (Pages {start}-{end})"
+
+        lines.append(node_line)
+
+        # Add summary if available and requested
+        if include_summary:
+            summary = node.get('summary', node.get('prefix_summary', ''))
+            if summary:
+                # Truncate very long summaries
+                summary_text = summary[:200] + "..." if len(summary) > 200 else summary
+                lines.append(f"{indent}  → {summary_text}")
+
+        # Recurse into children
+        if 'nodes' in node and node['nodes']:
+            for i, child in enumerate(node['nodes']):
+                child_prefix = "├─ " if i < len(node['nodes']) - 1 else "└─ "
+                traverse(child, depth + 1, child_prefix)
+
+    if isinstance(structure, list):
+        for node in structure:
+            traverse(node, 0)
+    else:
+        traverse(structure, 0)
+
+    return "\n".join(lines)
+
+
 def get_node_by_path(structure: Any, node_path: str) -> Optional[Dict[str, Any]]:
     """Get specific node by its hierarchical path."""
     # This is a simplified version - could be enhanced
@@ -383,106 +440,170 @@ def navigate_to_section(
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-def ask_llm_about_content(
+def retrieve_node_by_id(
     ctx: RunContext[EnhancedRAGContext],
-    question: str,
-    content: str
+    file_path: str,
+    node_id: str
 ) -> str:
     """
-    Ask a focused question about specific content using the LLM.
+    Retrieve a specific node's full content by its node_id.
 
-    Use this when you have retrieved specific content and need to
-    extract or analyze specific information from it.
+    Use this to get the detailed text content of a node you identified from
+    the file tree structure. This is the primary method for retrieving content
+    after reviewing the document structure.
 
     Args:
-        question: Specific question about the content
-        content: The content to analyze
+        file_path: Path to the PageIndex structure file
+        node_id: The node_id to retrieve (e.g., "0001", "0012")
 
     Returns:
-        LLM's answer to the question
+        JSON with full node content including text, summary, and metadata
     """
-    logger.info(f"[Tool] ask_llm_about_content: {question[:100]}...")
+    logger.info(f"[Tool] retrieve_node_by_id: node_id={node_id} from {file_path}")
 
     try:
-        response = ctx.deps.llm_client.chat.completions.create(
-            model=ctx.deps.llm_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that answers questions based on provided content. Be concise and cite specific parts of the content."
-                },
-                {
-                    "role": "user",
-                    "content": f"Content:\n{content}\n\nQuestion: {question}"
-                }
-            ],
-            temperature=0
-        )
+        # Load structure if not already loaded
+        if file_path not in ctx.deps.selected_files:
+            structure = load_pageindex_structure(file_path)
+            if not structure:
+                return json.dumps({
+                    'error': f'Failed to load structure from {file_path}'
+                }, ensure_ascii=False)
+            ctx.deps.selected_files[file_path] = structure
+        else:
+            structure = ctx.deps.selected_files[file_path]
 
-        answer = response.choices[0].message.content
+        # Find the node by ID
+        node = get_node_by_id(structure, node_id)
+
+        if not node:
+            return json.dumps({
+                'error': f'Node not found: {node_id}',
+                'hint': 'Check the file tree structure for valid node_ids'
+            }, ensure_ascii=False)
+
+        # Extract content
+        content_info = {
+            'file_path': file_path,
+            'file_name': get_pageindex_doc_name(file_path),
+            'node_id': node_id,
+            'title': node.get('title', 'Untitled'),
+            'summary': node.get('summary', node.get('prefix_summary', '')),
+            'text': node.get('text', 'No text available'),
+            'pages': {
+                'start': node.get('start_index'),
+                'end': node.get('end_index')
+            },
+            'has_subsections': bool(node.get('nodes'))
+        }
+
+        # If has subsections, list them
+        if content_info['has_subsections']:
+            content_info['subsections'] = [
+                {
+                    'node_id': child.get('node_id', ''),
+                    'title': child.get('title', 'Untitled')
+                }
+                for child in node.get('nodes', [])
+            ]
 
         # Store in history
         ctx.deps.search_history.append({
             'step': len(ctx.deps.search_history) + 1,
-            'action': 'ask_llm',
-            'question': question,
-            'answer': answer
+            'action': 'retrieve_node',
+            'file_path': file_path,
+            'node_id': node_id,
+            'content': content_info['text']
         })
 
-        return answer
+        return json.dumps(content_info, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        logger.error(f"Error in ask_llm_about_content: {e}")
-        return f"Error: {str(e)}"
+        logger.error(f"Error in retrieve_node_by_id: {e}")
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
 # ==================== System Prompt ====================
 
-ENHANCED_SYSTEM_PROMPT = """You are an advanced research assistant with access to a multi-document knowledge base using PageIndex technology.
+BASE_SYSTEM_PROMPT = """You are an advanced research assistant with access to a multi-document collection.
 
 Your capabilities:
-1. **Distributed Search** - Search across all documents to find relevant files
-2. **Tree Navigation** - Navigate document structures using hierarchical tree indices
-3. **Native Retrieval** - Retrieve specific sections using PageIndex's reasoning-based approach
-4. **Content Analysis** - Analyze retrieved content using LLM reasoning
+1. **Document Understanding** - You have access to the complete structure of selected documents
+2. **Intelligent Retrieval** - Retrieve specific sections by their node_id based on your analysis
+3. **Content Synthesis** - Combine information from multiple sources to answer questions
 
-Your optimal workflow for answering questions:
+## IMPORTANT: Available Documents
 
-Step 1: SEARCH FILES
-- Use 'search_files_by_topic' to find relevant documents
-- Review the ranked files and their top sections
+{file_trees}
 
-Step 2: LOAD STRUCTURE
-- Use 'load_file_structure' on the most relevant file(s)
-- Review the tree structure (table of contents)
-- Identify which sections are most relevant
+## Your Workflow for Answering Questions:
 
-Step 3: NAVIGATE & RETRIEVE
-- Use 'navigate_to_section' to get detailed content from specific sections
-- Navigate deeper into subsections if needed
-- You can navigate to multiple sections if the answer requires information from different parts
+Step 1: ANALYZE THE QUESTION
+- Understand what information is needed
+- Identify which document sections are most relevant based on the file trees above
 
-Step 4: ANALYZE (if needed)
-- Use 'ask_llm_about_content' to extract specific information from retrieved content
-- Useful for complex analysis or when content is very long
+Step 2: RETRIEVE RELEVANT NODES
+- Use 'retrieve_node_by_id' to get content from specific nodes
+- You can retrieve multiple nodes if needed
+- Focus on nodes whose titles and summaries match the question
 
-Step 5: SYNTHESIZE
-- Combine information from all retrieved sections
+Step 3: SYNTHESIZE ANSWER
+- Combine information from all retrieved nodes
 - Provide a comprehensive answer
-- ALWAYS cite sources (file name, section title, page numbers)
+- ALWAYS cite sources using: [File: X, Section: Y, Pages: Z]
 
 Guidelines:
-- Always start with file search, never assume which file to use
-- Use the tree structure to navigate efficiently (like a human reading a table of contents)
-- Retrieve only the sections you need (don't retrieve entire documents)
-- Cite your sources clearly: [File: X, Section: Y, Pages: Z]
-- If information is not found, clearly state that
+- Review the file trees carefully to identify the most relevant sections
+- Use node_ids to retrieve content (e.g., "0001", "0012")
+- You can retrieve multiple nodes from the same or different files
+- Cite your sources clearly with file name, section title, and page numbers
+- If information is not found in available documents, clearly state that
 - Be thorough but concise
 
-Remember: You're using PageIndex's reasoning-based retrieval - navigate documents intelligently like a human expert would!"""
+Remember: The file trees show the complete document structure without the full text.
+You must use retrieve_node_by_id to get the actual content!"""
+
+
+def build_dynamic_system_prompt(selected_files: Dict[str, Any]) -> str:
+    """
+    Build dynamic system prompt with file tree structures.
+
+    Args:
+        selected_files: Dict mapping file_path to structure
+
+    Returns:
+        Complete system prompt with file trees
+    """
+    if not selected_files:
+        return BASE_SYSTEM_PROMPT.replace("{file_trees}", "No documents loaded yet.")
+
+    file_trees_text = []
+    for file_path, structure in selected_files.items():
+        file_name = get_pageindex_doc_name(file_path)
+        tree_view = build_tree_structure_view(structure, include_summary=True)
+
+        file_section = f"""
+### File: {file_name}
+Path: {file_path}
+
+Structure:
+{tree_view}
+"""
+        file_trees_text.append(file_section.strip())
+
+    trees_combined = "\n\n" + "\n\n".join(file_trees_text) + "\n"
+    return BASE_SYSTEM_PROMPT.replace("{file_trees}", trees_combined)
 
 
 # ==================== Agent Creation ====================
+
+
+import logfire  # type: ignore
+
+logfire.configure(token=os.getenv("LOG_FIRE_TOKEN"), scrubbing=False)
+logfire.instrument_pydantic_ai()
+    # logfire.instrument_httpx(capture_all=True)
+
 
 def create_enhanced_agent(
     collection_name: str,
@@ -491,7 +612,8 @@ def create_enhanced_agent(
     base_url: str = None,
     top_k_files: int = 3,
     top_k_nodes: int = 5,
-    max_tree_depth: int = 3
+    max_tree_depth: int = 3,
+    system_prompt: str = None
 ) -> tuple[Agent, EnhancedRAGContext]:
     """
     Create an enhanced RAG agent with native PageIndex retrieval.
@@ -504,6 +626,7 @@ def create_enhanced_agent(
         top_k_files: Number of files to retrieve
         top_k_nodes: Number of nodes to retrieve per file
         max_tree_depth: Maximum depth for tree structure display
+        system_prompt: Optional custom system prompt (if None, uses BASE_SYSTEM_PROMPT)
 
     Returns:
         Tuple of (agent, context)
@@ -514,11 +637,11 @@ def create_enhanced_agent(
 
     # Setup LLM - priority: parameter > .env > default
     model_name = model_name or os.getenv("OPENAI_MODEL", "gpt-4o")
-    api_key = api_key or os.getenv("CHATGPT_API_KEY")
+    api_key = api_key or os.getenv("OPENAI_API_KEY")
     base_url = base_url or os.getenv("OPENAI_BASE_URL")
 
     if not api_key:
-        raise ValueError("API key not found. Please set CHATGPT_API_KEY in .env file")
+        raise ValueError("API key not found. Please set OPENAI_API_KEY in .env file")
 
     llm_kwargs = {"api_key": api_key}
     if base_url:
@@ -555,16 +678,19 @@ def create_enhanced_agent(
 
     logger.info(f"Creating enhanced agent with model: {model_name}")
 
-    # Create agent
+    # Use provided system prompt or default
+    if system_prompt is None:
+        system_prompt = BASE_SYSTEM_PROMPT.replace("{file_trees}", "No documents loaded yet.")
+
+    # Create agent with retrieve_node_by_id as primary tool
     agent = Agent(
         model=model,
         deps_type=EnhancedRAGContext,
-        system_prompt=ENHANCED_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         tools=[
-            search_files_by_topic,
-            load_file_structure,
-            navigate_to_section,
-            ask_llm_about_content
+            retrieve_node_by_id,
+            # search_files_by_topic,
+            # load_file_structure
         ],
         retries=2
     )
@@ -578,14 +704,174 @@ def run_enhanced_agent(
     question: str,
     collection_name: str,
     model_name: str = None,
-    verbose: bool = False
+    verbose: bool = False,
+    use_agent_selection: bool = True
 ) -> Dict[str, Any]:
-    """Run enhanced agent for a single question."""
-    _agent, context = create_enhanced_agent(
-        collection_name=collection_name,
-        model_name=model_name
+    """
+    Run enhanced agent for a single question.
+
+    Args:
+        question: User question
+        collection_name: ChromaDB collection name
+        model_name: LLM model name
+        verbose: Verbose output
+        use_agent_selection: If True, use agent-based node selection; if False, use fixed pipeline
+
+    Returns:
+        Dict with answer and workflow steps
+    """
+    if use_agent_selection:
+        return run_agent_based_pipeline(
+            question=question,
+            collection_name=collection_name,
+            model_name=model_name,
+            verbose=verbose
+        )
+    else:
+        _agent, context = create_enhanced_agent(
+            collection_name=collection_name,
+            model_name=model_name
+        )
+        return run_fixed_pipeline(question, context)
+
+
+def run_agent_based_pipeline(
+    question: str,
+    collection_name: str,
+    model_name: str = None,
+    verbose: bool = False,
+    top_k_files: int = 3
+) -> Dict[str, Any]:
+    """
+    Run agent-based pipeline with fixed file selection and agent-driven node retrieval.
+
+    Workflow:
+    1. Fixed file search and selection (using distributed retrieval)
+    2. Load file structures into agent context
+    3. Agent autonomously decides which nodes to retrieve
+    4. Agent synthesizes answer from retrieved content
+
+    Args:
+        question: User question
+        collection_name: ChromaDB collection name
+        model_name: LLM model name
+        verbose: Verbose output
+        top_k_files: Number of top files to select
+
+    Returns:
+        Dict with answer and workflow steps
+    """
+    logger.info(f"Starting agent-based pipeline for question: {question}")
+
+    # Step 1: Fixed file search
+    logger.info("Step 1: Performing fixed file search")
+    retriever = MultiDocRetriever(collection_name=collection_name)
+
+    file_results = retriever.retrieve_relevant_files(
+        query=question,
+        top_k_files=top_k_files
     )
-    return run_fixed_pipeline(question, context)
+
+    search_history = [{
+        "step": 1,
+        "action": "search_files",
+        "query": question,
+        "num_results": len(file_results),
+    }]
+
+    # Step 2: Load file structures
+    logger.info(f"Step 2: Loading structures for top {top_k_files} files")
+    selected_files = {}
+
+    for result in file_results[:top_k_files]:
+        file_path = result["file_path"]
+        file_name = result.get("file_name") or get_pageindex_doc_name(file_path)
+
+        structure = load_pageindex_structure(file_path)
+        if not structure:
+            search_history.append({
+                "step": len(search_history) + 1,
+                "action": "load_structure",
+                "file_path": file_path,
+                "error": "structure_load_failed",
+            })
+            continue
+
+        selected_files[file_path] = structure
+        search_history.append({
+            "step": len(search_history) + 1,
+            "action": "load_structure",
+            "file_path": file_path,
+            "file_name": file_name,
+        })
+
+        if verbose:
+            logger.info(f"  Loaded: {file_name}")
+
+    if not selected_files:
+        return {
+            "question": question,
+            "answer": "No files could be loaded for this question.",
+            "workflow_steps": search_history,
+            "files_used": [],
+        }
+
+    # Step 3: Build dynamic system prompt with file trees
+    logger.info("Step 3: Building dynamic system prompt with file trees")
+    dynamic_prompt = build_dynamic_system_prompt(selected_files)
+
+    if verbose:
+        logger.info(f"System prompt includes {len(selected_files)} file(s)")
+
+    # Step 4: Create agent with dynamic prompt and context
+    logger.info("Step 4: Creating agent with dynamic context")
+    agent, context = create_enhanced_agent(
+        collection_name=collection_name,
+        model_name=model_name,
+        top_k_files=top_k_files,
+        system_prompt=dynamic_prompt
+    )
+
+    # Pre-populate context with selected files
+    context.selected_files = selected_files
+    context.search_history = search_history
+    print(search_history)
+
+    # Step 5: Run agent to autonomously retrieve nodes and answer
+    logger.info("Step 5: Running agent for autonomous node retrieval and answering")
+
+    try:
+        result = agent.run_sync(
+            user_prompt=f"Answer the following question using the available document structures:\n\n{question}",
+            deps=context
+        )
+
+        answer = result.output
+
+        # Extract final search history from context
+        final_history = context.search_history
+        print(final_history)
+
+        return {
+            "question": question,
+            "answer": answer,
+            "workflow_steps": final_history,
+            "files_used": list(selected_files.keys()),
+            "agent_messages": [msg.model_dump() for msg in result.all_messages()] if verbose else []
+        }
+
+    except Exception as e:
+        logger.error(f"Error running agent: {e}")
+        import traceback
+        traceback.print_exc()
+
+        return {
+            "question": question,
+            "answer": f"Error during agent execution: {str(e)}",
+            "workflow_steps": search_history,
+            "files_used": list(selected_files.keys()),
+            "error": str(e)
+        }
 
 
 def run_fixed_pipeline(question: str, context: EnhancedRAGContext) -> Dict[str, Any]:
@@ -758,22 +1044,28 @@ def run_interactive_enhanced():
     parser.add_argument('--query', '-q', help='Single question')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     parser.add_argument('--output', '-o', help='Save result to JSON file')
+    parser.add_argument('--mode', choices=['agent', 'fixed'], default='agent',
+                       help='Pipeline mode: agent (agent-based node selection) or fixed (fixed pipeline)')
 
     args = parser.parse_args()
 
     if args.verbose:
         logger.setLevel("DEBUG")
 
+    use_agent_selection = (args.mode == 'agent')
+
     if args.query:
         # Single query mode
         print(f"\nQuestion: {args.query}")
         print("="*70)
+        print(f"Mode: {args.mode.upper()}")
 
         result = run_enhanced_agent(
             question=args.query,
             collection_name=args.collection,
             model_name=args.model,
-            verbose=args.verbose
+            verbose=args.verbose,
+            use_agent_selection=use_agent_selection
         )
 
         print(f"\nAnswer:\n{result['answer']}")
@@ -783,6 +1075,8 @@ def run_interactive_enhanced():
             print("-"*70)
             for step in result['workflow_steps']:
                 print(f"{step['step']}. {step['action'].upper()}")
+                if 'node_id' in step:
+                    print(f"   Node ID: {step['node_id']}")
 
             print(f"\n\nFiles Used:")
             print("-"*70)
@@ -801,13 +1095,9 @@ def run_interactive_enhanced():
         print("="*70)
         print(f"\nCollection: {args.collection}")
         print(f"Model: {args.model or 'gpt-4o'}")
+        print(f"Mode: {args.mode.upper()}")
         print("\nType your questions or :quit to exit")
         print("-"*70)
-
-        _agent, context = create_enhanced_agent(
-            collection_name=args.collection,
-            model_name=args.model
-        )
 
         while True:
             try:
@@ -821,13 +1111,21 @@ def run_interactive_enhanced():
                     break
 
                 print("\nAgent: ", end="", flush=True)
-                result = run_fixed_pipeline(question, context)
+                result = run_enhanced_agent(
+                    question=question,
+                    collection_name=args.collection,
+                    model_name=args.model,
+                    verbose=args.verbose,
+                    use_agent_selection=use_agent_selection
+                )
                 print(result["answer"])
 
             except KeyboardInterrupt:
                 print("\n\nUse :quit to exit")
             except Exception as e:
                 print(f"\n❌ Error: {e}")
+                import traceback
+                traceback.print_exc()
 
 
 if __name__ == "__main__":

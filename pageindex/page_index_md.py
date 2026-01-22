@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import os
+import tiktoken
 try:
     from .utils import *
 except:
@@ -85,6 +86,89 @@ def extract_node_text_content(node_list, markdown_lines):
         
         node['text'] = '\n'.join(markdown_lines[start_line:end_line]).strip()    
     return all_nodes
+
+
+def split_text_by_tokens(text, max_tokens, model=None):
+    if not text:
+        return [""]
+    try:
+        encoder = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoder = tiktoken.get_encoding("cl100k_base")
+    tokens = encoder.encode(text)
+    parts = []
+    for i in range(0, len(tokens), max_tokens):
+        parts.append(encoder.decode(tokens[i:i + max_tokens]))
+    return [part for part in parts if part.strip()]
+
+
+def split_text_into_chunks(text, max_tokens, model=None):
+    if not text:
+        return [""]
+    if not max_tokens or max_tokens <= 0:
+        return [text]
+
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return [text]
+
+    chunks = []
+    current = []
+    current_tokens = 0
+    for paragraph in paragraphs:
+        paragraph_tokens = count_tokens(paragraph, model=model)
+        if paragraph_tokens > max_tokens:
+            if current:
+                chunks.append("\n\n".join(current).strip())
+                current = []
+                current_tokens = 0
+            chunks.extend(split_text_by_tokens(paragraph, max_tokens, model=model))
+            continue
+
+        if current_tokens + paragraph_tokens <= max_tokens:
+            current.append(paragraph)
+            current_tokens += paragraph_tokens
+        else:
+            chunks.append("\n\n".join(current).strip())
+            current = [paragraph]
+            current_tokens = paragraph_tokens
+
+    if current:
+        chunks.append("\n\n".join(current).strip())
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def split_large_nodes_for_markdown(tree_nodes, max_tokens, model=None):
+    if isinstance(tree_nodes, dict):
+        nodes = [tree_nodes]
+    else:
+        nodes = tree_nodes
+
+    for node in nodes:
+        text = node.get("text", "")
+        if text and max_tokens and count_tokens(text, model=model) > max_tokens:
+            parts = split_text_into_chunks(text, max_tokens, model=model)
+            if parts:
+                node["text"] = parts[0]
+                total_parts = len(parts)
+                part_nodes = []
+                for idx, part in enumerate(parts[1:], start=2):
+                    part_nodes.append({
+                        "title": f"{node.get('title', '')} (part {idx}/{total_parts})",
+                        "node_id": node.get("node_id"),
+                        "text": part,
+                        "line_num": node.get("line_num"),
+                        "nodes": [],
+                    })
+                if part_nodes:
+                    existing_children = node.get("nodes", []) or []
+                    node["nodes"] = part_nodes + existing_children
+
+        if node.get("nodes"):
+            split_large_nodes_for_markdown(node["nodes"], max_tokens, model=model)
+
+    return tree_nodes
 
 def update_node_list_with_text_token_count(node_list, model=None):
 
@@ -240,7 +324,7 @@ def clean_tree_for_output(tree_nodes):
     return cleaned_nodes
 
 
-async def md_to_tree(md_path, if_thinning=False, min_token_threshold=None, if_add_node_summary='no', summary_token_threshold=None, model=None, if_add_doc_description='no', if_add_node_text='no', if_add_node_id='yes'):
+async def md_to_tree(md_path, if_thinning=False, min_token_threshold=None, if_add_node_summary='no', summary_token_threshold=None, model=None, if_add_doc_description='no', if_add_node_text='no', if_add_node_id='yes', max_token_num_each_node=2000):
     with open(md_path, 'r', encoding='utf-8') as f:
         markdown_content = f.read()
     
@@ -248,7 +332,16 @@ async def md_to_tree(md_path, if_thinning=False, min_token_threshold=None, if_ad
     node_list, markdown_lines = extract_nodes_from_markdown(markdown_content)
 
     print(f"Extracting text content from nodes...")
-    nodes_with_content = extract_node_text_content(node_list, markdown_lines)
+    if node_list:
+        nodes_with_content = extract_node_text_content(node_list, markdown_lines)
+    else:
+        doc_title = os.path.splitext(os.path.basename(md_path))[0]
+        nodes_with_content = [{
+            'title': doc_title,
+            'line_num': 1,
+            'level': 1,
+            'text': markdown_content.strip()
+        }]
     
     if if_thinning:
         nodes_with_content = update_node_list_with_text_token_count(nodes_with_content, model=model)
@@ -257,6 +350,13 @@ async def md_to_tree(md_path, if_thinning=False, min_token_threshold=None, if_ad
     
     print(f"Building tree from nodes...")
     tree_structure = build_tree_from_nodes(nodes_with_content)
+
+    if max_token_num_each_node:
+        tree_structure = split_large_nodes_for_markdown(
+            tree_structure,
+            max_token_num_each_node,
+            model=model,
+        )
 
     if if_add_node_id == 'yes':
         write_node_id(tree_structure)

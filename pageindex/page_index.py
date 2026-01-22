@@ -1097,7 +1097,16 @@ def page_index_main(doc, opt=None):
             'structure': structure,
         }
 
-    return asyncio.run(page_index_builder())
+    # Handle both cases: with and without existing event loop
+    try:
+        loop = asyncio.get_running_loop()
+        # If we're already in an event loop (e.g., Jupyter), create a task
+        import nest_asyncio
+        nest_asyncio.apply()
+        return asyncio.run(page_index_builder())
+    except RuntimeError:
+        # No event loop is running, use asyncio.run() normally
+        return asyncio.run(page_index_builder())
 
 
 def page_index(doc, model=None, toc_check_page_num=None, max_page_num_each_node=None, max_token_num_each_node=None,

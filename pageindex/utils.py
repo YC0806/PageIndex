@@ -8,6 +8,7 @@ import json
 import PyPDF2
 import copy
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import pymupdf
 from io import BytesIO
 from dotenv import load_dotenv
@@ -17,18 +18,26 @@ import yaml
 from pathlib import Path
 from types import SimpleNamespace as config
 
-CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")  # Optional: custom base URL for OpenAI-compatible APIs
 
 def count_tokens(text, model=None):
     if not text:
         return 0
-    enc = tiktoken.encoding_for_model(model)
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
     return len(tokens)
 
-def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
+def ChatGPT_API_with_finish_reason(model, prompt, api_key=OPENAI_API_KEY, chat_history=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    # Create client with custom base_url if provided
+    client_kwargs = {"api_key": api_key}
+    if OPENAI_BASE_URL:
+        client_kwargs["base_url"] = OPENAI_BASE_URL
+    client = openai.OpenAI(**client_kwargs)
     for i in range(max_retries):
         try:
             if chat_history:
@@ -58,9 +67,13 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
 
 
 
-def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
+def ChatGPT_API(model, prompt, api_key=OPENAI_API_KEY, chat_history=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    # Create client with custom base_url if provided
+    client_kwargs = {"api_key": api_key}
+    if OPENAI_BASE_URL:
+        client_kwargs["base_url"] = OPENAI_BASE_URL
+    client = openai.OpenAI(**client_kwargs)
     for i in range(max_retries):
         try:
             if chat_history:
@@ -86,12 +99,16 @@ def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
                 return "Error"
             
 
-async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
+async def ChatGPT_API_async(model, prompt, api_key=OPENAI_API_KEY):
     max_retries = 10
     messages = [{"role": "user", "content": prompt}]
+    # Create client with custom base_url if provided
+    client_kwargs = {"api_key": api_key}
+    if OPENAI_BASE_URL:
+        client_kwargs["base_url"] = OPENAI_BASE_URL
     for i in range(max_retries):
         try:
-            async with openai.AsyncOpenAI(api_key=api_key) as client:
+            async with openai.AsyncOpenAI(**client_kwargs) as client:
                 response = await client.chat.completions.create(
                     model=model,
                     messages=messages,

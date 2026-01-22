@@ -63,13 +63,13 @@ class Config:
     LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     # OpenAI API (for main LLM - used by PageIndex core and RAG agents)
-    OPENAI_API_KEY = os.getenv("CHATGPT_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o"  # Main LLM model name
 
     # Embedding API (for distributed retrieval)
     # These can be different from the main OpenAI API if using separate embedding service
-    EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("CHATGPT_API_KEY")
+    EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
     EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL") or os.getenv("OPENAI_BASE_URL")
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL") or "text-embedding-3-small"
 
